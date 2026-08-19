@@ -1,0 +1,22 @@
+services:
+
+  postgres:
+    image: postgres:16
+    container_name: shepherd-postgres
+
+    environment:
+      POSTGRES_DB: shepherd
+      POSTGRES_USER: shepherd
+      POSTGRES_PASSWORD: shepherd_dev_password
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    restart: unless-stopped
+
+
+volumes:
+  postgres_data:
