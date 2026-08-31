@@ -67,6 +67,7 @@ DIGITAL_NATIVE = CustomerArchetype(
     device_count_max=5,
 )
 
+
 CUSTOMER_ARCHETYPES = [
     CONSERVATIVE,
     PROFESSIONAL,
@@ -74,3 +75,16 @@ CUSTOMER_ARCHETYPES = [
     HIGH_NET_WORTH,
     DIGITAL_NATIVE
 ]
+
+ARCHETYPE_WEIGHTS = {
+    "conservative": 0.30,
+    "professional": 0.30,
+    "traveler": 0.15,
+    "high_net_worth": 0.10,
+    "digital_native": 0.15,
+}
+
+ARCHETYPE_BY_NAME = {
+    archetype.name: archetype
+    for archetype in CUSTOMER_ARCHETYPES
+}
