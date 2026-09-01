@@ -23,3 +23,5 @@ class CustomerState:
     preferred_merchant_categories: List[str] = field(default_factory=list)
 
     last_transaction_timestamp: datetime | None = None
+
+    account_ids: list[UUID] = field(default_factory=list)
