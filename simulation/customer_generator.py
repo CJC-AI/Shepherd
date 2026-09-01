@@ -1,6 +1,7 @@
 import random
 import uuid
 
+from simulation.clock import SimulationClock
 from simulation.config import CustomerArchetype
 from simulation.constants import (
     ARCHETYPE_MERCHANT_CATEGORIES,
@@ -11,7 +12,8 @@ from simulation.customer_state import CustomerState
 
 
 class CustomerGenerator:
-    def __init__(self, seed: int | None = None):
+    def __init__(self, clock: SimulationClock, seed: int | None = None):
+        self.clock = clock
         self.random = random.Random(seed)
 
     def generate(
@@ -62,10 +64,13 @@ class CustomerGenerator:
             archetype
         )
 
+        customer_start_time = self.clock.now()
+
         return CustomerState(
             customer_id=customer_id,
             archetype=archetype,
             home_country=home_country,
+            customer_start_time=customer_start_time,
             average_spend=round(average_spend, 2),
             spend_std=round(spend_std, 2),
             transactions_per_day=transactions_per_day,

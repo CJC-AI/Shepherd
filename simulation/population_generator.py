@@ -9,7 +9,7 @@ from simulation.customer_state import CustomerState
 
 class PopulationGenerator:
     def __init__(self, seed: int | None = None):
-        self.customer_generator = CustomerGenerator(seed=seed)
+        self.customer_generator = CustomerGenerator(clock=clock, seed=seed)
 
     def generate(
         self,
