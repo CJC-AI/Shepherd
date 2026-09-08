@@ -1,5 +1,6 @@
 import random
 import uuid
+from datetime import datetime
 
 from simulation.clock import SimulationClock
 from simulation.config import CustomerArchetype
@@ -12,14 +13,23 @@ from simulation.customer_state import CustomerState
 
 
 class CustomerGenerator:
-    def __init__(self, clock: SimulationClock, seed: int | None = None):
+    def __init__(
+        self,
+        clock: SimulationClock,
+        seed: int | None = None,
+    ):
         self.clock = clock
         self.random = random.Random(seed)
 
     def generate(
         self,
         archetype: CustomerArchetype,
+        customer_start_time: datetime | None = None,
     ) -> CustomerState:
+
+        if customer_start_time is None:
+            customer_start_time = self.clock.now()
+
         customer_id = uuid.uuid4()
 
         home_country = self.random.choice(COUNTRIES)
@@ -60,17 +70,15 @@ class CustomerGenerator:
             archetype=archetype,
         )
 
-        preferred_categories = self._generate_preferred_categories(
-            archetype
+        preferred_categories = (
+            self._generate_preferred_categories(archetype)
         )
-
-        customer_start_time = self.clock.now()
 
         return CustomerState(
             customer_id=customer_id,
             archetype=archetype,
-            home_country=home_country,
             customer_start_time=customer_start_time,
+            home_country=home_country,
             average_spend=round(average_spend, 2),
             spend_std=round(spend_std, 2),
             transactions_per_day=transactions_per_day,
@@ -84,6 +92,7 @@ class CustomerGenerator:
         home_country: str,
         archetype: CustomerArchetype,
     ) -> list[str]:
+
         countries = [home_country]
 
         if archetype.international_probability > 0.10:
@@ -108,6 +117,7 @@ class CustomerGenerator:
         self,
         archetype: CustomerArchetype,
     ) -> list[str]:
+
         categories = ARCHETYPE_MERCHANT_CATEGORIES[
             archetype.name
         ]
@@ -120,13 +130,9 @@ class CustomerGenerator:
         )
 
     def choose_transaction_country(
-    self,
-    customer: CustomerState,
+        self,
+        customer: CustomerState,
     ) -> str:
-        """
-        Choose the country for a transaction based on the
-        customer's established geographic behaviour.
-        """
 
         international = (
             self.random.random()

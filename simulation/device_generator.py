@@ -1,18 +1,18 @@
-from simulation.clock import SimulationClock
+#from simulation.clock import SimulationClock
 from simulation.customer_state import CustomerState
 from simulation.device_state import DeviceState
 
 
 class DeviceGenerator:
-    def __init__(self, clock: SimulationClock):
-        self.clock = clock
+    #def __init__(self, clock: SimulationClock):
+        #self.clock = clock
 
     def generate_for_customer(
         self,
         customer: CustomerState,
     ) -> list[DeviceState]:
 
-        first_seen = self.clock.now()
+        first_seen = customer.customer_start_time
 
         return [
             DeviceState(

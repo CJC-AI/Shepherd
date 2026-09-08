@@ -5,10 +5,11 @@ from simulation.config import (
 )
 from simulation.customer_generator import CustomerGenerator
 from simulation.customer_state import CustomerState
+from simulation.clock import SimulationClock
 
 
 class PopulationGenerator:
-    def __init__(self, seed: int | None = None):
+    def __init__(self, clock: SimulationClock, seed: int | None = None):
         self.customer_generator = CustomerGenerator(clock=clock, seed=seed)
 
     def generate(
@@ -39,3 +40,5 @@ class PopulationGenerator:
             customers.append(customer)
 
         return customers
+
+    
