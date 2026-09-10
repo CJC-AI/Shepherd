@@ -33,6 +33,15 @@ class DeviceGenerator:
     """
 
     def __init__(self, seed: int | None = None):
+        """
+        Initialize the device generator.
+
+        Parameters
+        ----------
+        seed:
+            Optional random seed used to make device generation
+            reproducible.
+        """
         self.random = Random(seed)
 
     def generate_for_customer(
@@ -45,14 +54,13 @@ class DeviceGenerator:
         The customer's first known device is treated as the primary
         device and is activated at the customer's start time. Remaining
         devices are assigned random first-seen timestamps between the
-        customer's start time and the end of the customer's possible
-        lifecycle window.
+        customer's start time and the customer's end time.
 
         Parameters
         ----------
         customer:
-            CustomerState containing the customer's known device IDs
-            and simulated start time.
+            CustomerState containing the customer's known device IDs and
+            simulated lifecycle timestamps.
 
         Returns
         -------
@@ -81,12 +89,18 @@ class DeviceGenerator:
         ]
 
         for device_id in customer.known_devices[1:]:
+            first_seen = random_datetime(
+                customer.customer_start_time,
+                customer.customer_end_time,
+                self.random,
+            )
+
             devices.append(
                 DeviceState(
                     device_id=device_id,
                     customer_id=customer.customer_id,
                     device_trust_score=0.5,
-                    first_seen=customer.customer_start_time,
+                    first_seen=first_seen,
                 )
             )
 
