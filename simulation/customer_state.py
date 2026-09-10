@@ -11,6 +11,7 @@ class CustomerState:
     customer_id: UUID
     archetype: CustomerArchetype
     customer_start_time: datetime
+    customer_end_time: datetime
 
     home_country: str
 

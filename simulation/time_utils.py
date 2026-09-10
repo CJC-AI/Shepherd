@@ -41,7 +41,7 @@ def random_datetime(
 def random_progress(
     rng: random.Random,
     alpha: float = 2.0,
-    beta: float = 5.0,
+    beta: float = 2.0,
 ) -> float:
     """
     Generate a value between 0 and 1 using a beta distribution.

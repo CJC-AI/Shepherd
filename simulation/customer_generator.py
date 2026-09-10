@@ -25,10 +25,52 @@ class CustomerGenerator:
         self,
         archetype: CustomerArchetype,
         customer_start_time: datetime | None = None,
+        customer_end_time: datetime | None = None,
     ) -> CustomerState:
+        """Generate a simulated customer.
+
+    Parameters
+    ----------
+    archetype:
+        Behavioral archetype assigned to the customer.
+    customer_start_time:
+        Optional timestamp at which the customer's simulated lifecycle begins.
+        When omitted, the simulation clock's current time is used.
+    customer_end_time:
+        Optional timestamp at which the customer's simulated lifecycle ends.
+        When omitted, the simulation clock's current time is used.
+
+    Returns
+    -------
+    CustomerState
+        A fully populated simulated customer state.
+
+    Raises
+    ------
+    ValueError
+        If the end time occurs before the start time.
+    """
 
         if customer_start_time is None:
             customer_start_time = self.clock.now()
+
+        resolved_start_time = (
+            customer_start_time
+            if customer_start_time is not None
+            else self.clock.now()
+        )
+
+        resolved_end_time = (
+            customer_end_time
+            if customer_end_time is not None
+            else resolved_start_time
+        )
+
+        if resolved_end_time < resolved_start_time:
+            raise ValueError(
+                "customer_end_time must be greater than or equal to " \
+                "customer_start_time"
+            )
 
         customer_id = uuid.uuid4()
 
@@ -77,7 +119,8 @@ class CustomerGenerator:
         return CustomerState(
             customer_id=customer_id,
             archetype=archetype,
-            customer_start_time=customer_start_time,
+            customer_start_time=resolved_start_time,
+            customer_end_time=resolved_end_time,
             home_country=home_country,
             average_spend=round(average_spend, 2),
             spend_std=round(spend_std, 2),
