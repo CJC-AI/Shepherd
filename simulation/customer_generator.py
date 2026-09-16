@@ -1,3 +1,14 @@
+"""
+Generate simulated bank customer state.
+
+This module produces CustomerState objects containing both behavioral
+attributes and simulation lifecycle information.
+
+Entity identifiers are generated deterministically from stable simulation
+identifiers so that rebuilding a population with the same configuration
+produces the same customer and device UUIDs.
+"""
+
 import random
 import uuid
 from datetime import datetime
@@ -12,47 +23,78 @@ from simulation.constants import (
 from simulation.customer_state import CustomerState
 
 
+SIMULATION_NAMESPACE = uuid.UUID(
+    "7f4a7c0e-0dd8-4c0d-9b48-4a5f2e2e7c01"
+)
+
+
 class CustomerGenerator:
+    """
+    Generate deterministic simulated customers.
+
+    Parameters
+    ----------
+    clock:
+        Simulation clock used when explicit lifecycle timestamps are not
+        supplied.
+    seed:
+        Optional seed controlling stochastic customer attributes.
+    """
+
     def __init__(
         self,
         clock: SimulationClock,
         seed: int | None = None,
     ):
+        """
+        Initialize the customer generator.
+
+        Parameters
+        ----------
+        clock:
+            Simulation clock used as the default lifecycle timestamp source.
+        seed:
+            Optional random seed used for reproducible behavioral attributes.
+        """
         self.clock = clock
         self.random = random.Random(seed)
 
     def generate(
         self,
         archetype: CustomerArchetype,
+        customer_index: int | None = None,
         customer_start_time: datetime | None = None,
         customer_end_time: datetime | None = None,
     ) -> CustomerState:
-        """Generate a simulated customer.
+        """
+        Generate one simulated customer.
 
-    Parameters
-    ----------
-    archetype:
-        Behavioral archetype assigned to the customer.
-    customer_start_time:
-        Optional timestamp at which the customer's simulated lifecycle begins.
-        When omitted, the simulation clock's current time is used.
-    customer_end_time:
-        Optional timestamp at which the customer's simulated lifecycle ends.
-        When omitted, the simulation clock's current time is used.
+        Parameters
+        ----------
+        archetype:
+            Behavioral archetype assigned to the customer.
+        customer_index:
+            Stable position of the customer within the simulation population.
+            When supplied, it is used to generate deterministic customer and
+            device UUIDs.
+        customer_start_time:
+            Optional timestamp at which the customer's simulated lifecycle
+            begins. When omitted, the simulation clock's current time is used.
+        customer_end_time:
+            Optional timestamp at which the customer's simulated lifecycle
+            ends. When omitted, the resolved start time is used.
 
-    Returns
-    -------
-    CustomerState
-        A fully populated simulated customer state.
+        Returns
+        -------
+        CustomerState
+            Fully populated simulated customer state.
 
-    Raises
-    ------
-    ValueError
-        If the end time occurs before the start time.
-    """
-
-        if customer_start_time is None:
-            customer_start_time = self.clock.now()
+        Raises
+        ------
+        ValueError
+            If the end time occurs before the start time.
+            If customer_index is negative.
+        """
 
         resolved_start_time = (
             customer_start_time
@@ -68,11 +110,20 @@ class CustomerGenerator:
 
         if resolved_end_time < resolved_start_time:
             raise ValueError(
-                "customer_end_time must be greater than or equal to " \
+                "customer_end_time must be greater than or equal to "
                 "customer_start_time"
             )
 
-        customer_id = uuid.uuid4()
+        if customer_index is not None and customer_index < 0:
+            raise ValueError("customer_index must be non-negative")
+
+        if customer_index is None:
+            customer_id = uuid.uuid4()
+        else:
+            customer_id = uuid.uuid5(
+                SIMULATION_NAMESPACE,
+                f"customer-{customer_index}",
+            )
 
         home_country = self.random.choice(COUNTRIES)
 
@@ -102,18 +153,27 @@ class CustomerGenerator:
             archetype.device_count_max,
         )
 
-        known_devices = [
-            uuid.uuid4()
-            for _ in range(device_count)
-        ]
+        if customer_index is None:
+            known_devices = [
+                uuid.uuid4()
+                for _ in range(device_count)
+            ]
+        else:
+            known_devices = [
+                uuid.uuid5(
+                    customer_id,
+                    f"device-{device_index}",
+                )
+                for device_index in range(device_count)
+            ]
 
         usual_countries = self._generate_usual_countries(
             home_country=home_country,
             archetype=archetype,
         )
 
-        preferred_categories = (
-            self._generate_preferred_categories(archetype)
+        preferred_categories = self._generate_preferred_categories(
+            archetype
         )
 
         return CustomerState(
@@ -135,6 +195,22 @@ class CustomerGenerator:
         home_country: str,
         archetype: CustomerArchetype,
     ) -> list[str]:
+        """
+        Generate the countries a customer commonly uses.
+
+        Parameters
+        ----------
+        home_country:
+            Customer's primary country.
+        archetype:
+            Customer behavioral archetype.
+
+        Returns
+        -------
+        list[str]
+            Unique list containing the home country and, when applicable,
+            likely international destinations.
+        """
 
         countries = [home_country]
 
@@ -160,6 +236,19 @@ class CustomerGenerator:
         self,
         archetype: CustomerArchetype,
     ) -> list[str]:
+        """
+        Generate merchant categories preferred by the customer.
+
+        Parameters
+        ----------
+        archetype:
+            Customer behavioral archetype.
+
+        Returns
+        -------
+        list[str]
+            Sampled preferred merchant categories.
+        """
 
         categories = ARCHETYPE_MERCHANT_CATEGORIES[
             archetype.name
@@ -176,6 +265,19 @@ class CustomerGenerator:
         self,
         customer: CustomerState,
     ) -> str:
+        """
+        Choose the country for a simulated transaction.
+
+        Parameters
+        ----------
+        customer:
+            Customer whose transaction location is being generated.
+
+        Returns
+        -------
+        str
+            Country code selected for the transaction.
+        """
 
         international = (
             self.random.random()

@@ -31,14 +31,16 @@ class SimulationRunner:
     def generate_customers(self) -> list[CustomerState]:
         customers: list[CustomerState] = []
 
-        for _ in range(self.config.customer_count):
-            customer = self._generate_customer()
+        for customer_index in range(self.config.customer_count):
+            customer = self._generate_customer(
+               customer_index=customer_index
+            )
 
             customers.append(customer)
 
         return customers
 
-    def _generate_customer(self) -> CustomerState:
+    def _generate_customer(self, customer_index: int) -> CustomerState:
         from simulation.config import (
             ARCHETYPE_BY_NAME,
             ARCHETYPE_WEIGHTS,
@@ -76,6 +78,7 @@ class SimulationRunner:
 
         return self.customer_generator.generate(
             archetype=archetype,
+            customer_index=customer_index,
             customer_start_time=customer_start_time,
             customer_end_time=customer_end_time,
         )

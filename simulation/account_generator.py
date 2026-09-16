@@ -1,3 +1,16 @@
+"""
+Generate simulated bank accounts for customers.
+
+This module creates AccountState objects from CustomerState objects while
+assigning account types, currencies, starting balances, and deterministic
+account identifiers.
+
+Account identifiers are derived from the customer's deterministic UUID and
+the account's position within that customer's account set. This allows the
+same simulation configuration and random seed to reproduce the same account
+identifiers.
+"""
+
 import random
 import uuid
 
@@ -22,13 +35,52 @@ COUNTRY_CURRENCIES = {
 
 
 class AccountGenerator:
+    """
+    Generate simulated accounts for customers.
+
+    Account identifiers are deterministic UUID5 values derived from the
+    customer's UUID and the account's index.
+
+    Parameters
+    ----------
+    seed:
+        Optional random seed controlling stochastic account attributes such as
+        account count, secondary currency selection, and starting balance.
+    """
+
     def __init__(self, seed: int | None = None):
+        """
+        Initialize the account generator.
+
+        Parameters
+        ----------
+        seed:
+            Optional random seed used for reproducible account attributes.
+        """
         self.random = random.Random(seed)
 
     def generate_for_customer(
         self,
         customer: CustomerState,
     ) -> list[AccountState]:
+        """
+        Generate accounts belonging to one customer.
+
+        Each customer receives one primary checking account and has a 10%
+        probability of receiving a second account. Secondary accounts are
+        either savings or checking accounts.
+
+        Parameters
+        ----------
+        customer:
+            CustomerState for which accounts should be generated.
+
+        Returns
+        -------
+        list[AccountState]
+            Generated account states belonging to the customer.
+        """
+
         account_count = 1
 
         if self.random.random() < 0.10:
@@ -41,7 +93,10 @@ class AccountGenerator:
         ]
 
         for index in range(account_count):
-            account_id = uuid.uuid4()
+            account_id = uuid.uuid5(
+                customer.customer_id,
+                f"account-{index}",
+            )
 
             if index == 0:
                 account_type = "checking"
@@ -86,6 +141,28 @@ class AccountGenerator:
         customer: CustomerState,
         is_primary: bool,
     ) -> str:
+        """
+        Select the currency for an account.
+
+        Primary accounts always use the customer's primary country currency.
+        Secondary accounts use that currency 75% of the time and otherwise
+        receive a randomly selected alternate supported currency.
+
+        Parameters
+        ----------
+        primary_currency:
+            Currency associated with the customer's home country.
+        customer:
+            CustomerState owning the account.
+        is_primary:
+            Whether the account is the customer's primary account.
+
+        Returns
+        -------
+        str
+            Three-letter currency code.
+        """
+
         if is_primary:
             return primary_currency
 
@@ -114,6 +191,27 @@ class AccountGenerator:
         customer: CustomerState,
         account_type: str,
     ) -> float:
+        """
+        Generate an initial account balance.
+
+        Checking accounts use a smaller balance multiplier than savings
+        accounts. A random variation is applied around the resulting base
+        amount, while ensuring that the balance is never below the customer's
+        average spend.
+
+        Parameters
+        ----------
+        customer:
+            CustomerState whose spending behavior determines the balance.
+        account_type:
+            Account type used to select the balance multiplier.
+
+        Returns
+        -------
+        float
+            Generated starting balance rounded to two decimal places.
+        """
+
         base_multiplier = (
             8
             if account_type == "checking"
