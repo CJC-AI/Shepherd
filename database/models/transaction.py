@@ -1,3 +1,11 @@
+"""
+Define the database model for persisted bank transactions.
+
+This module maps simulated transaction data to the PostgreSQL transactions
+table and defines the foreign-key relationships to accounts, merchants, and
+devices.
+"""
+
 import uuid
 from datetime import datetime, timezone
 
@@ -9,6 +17,14 @@ from database.models.base import Base
 
 
 class Transaction(Base):
+    """
+    Represent a persisted bank transaction.
+
+    A transaction links an account, merchant, and device and stores the
+    monetary, temporal, geographic, and fraud-label attributes needed by the
+    Shepherd fraud-detection pipeline.
+    """
+
     __tablename__ = "transactions"
 
     transaction_id: Mapped[uuid.UUID] = mapped_column(
@@ -52,6 +68,11 @@ class Transaction(Base):
         DateTime(timezone=True),
         nullable=False,
         index=True,
+    )
+
+    transaction_country: Mapped[str] = mapped_column(
+        String(2),
+        nullable=False,
     )
 
     ip_address: Mapped[str] = mapped_column(
