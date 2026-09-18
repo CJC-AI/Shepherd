@@ -11,6 +11,7 @@ transaction behavior can be validated before synthetic fraud is introduced.
 
 import random
 import uuid
+import hashlib
 from datetime import datetime, timedelta
 from ipaddress import IPv4Address
 from typing import Sequence
@@ -174,6 +175,7 @@ class TransactionGenerator:
                     amount=amount,
                     currency=account.currency,
                     transaction_timestamp=transaction_timestamp,
+                    transaction_country=transaction_country,
                     ip_address=ip_address,
                     is_fraud=None,
                 )
@@ -331,34 +333,43 @@ class TransactionGenerator:
         transaction_country: str,
     ) -> IPv4Address:
         """
-        Generate a deterministic-looking synthetic IPv4 address.
+        Generate a reproducible synthetic IPv4 address.
 
-        The current implementation does not attempt to map addresses to real
-        geographic ownership. It only provides valid synthetic IPv4 values
-        for simulation purposes.
+        The address is derived from the customer identifier, transaction country,
+        and generator randomness using SHA-256. Unlike Python's built-in hash(),
+        SHA-256 produces stable output across separate Python processes.
 
         Parameters
         ----------
         customer:
             Customer associated with the transaction.
         transaction_country:
-            Country where the transaction is simulated.
+            Country where the transaction is simulated to occur.
 
         Returns
         -------
         IPv4Address
-            Synthetic IPv4 address.
+            Reproducible synthetic IPv4 address.
         """
+
+        random_component = self.random.randint(
+            0,
+            2**32 - 1,
+        )
 
         seed_value = (
             f"{customer.customer_id}-"
             f"{transaction_country}-"
-            f"{self.random.randint(0, 2**32 - 1)}"
+            f"{random_component}"
         )
 
-        numeric_value = (
-            hash(seed_value)
-            & 0xFFFFFFFF
+        digest = hashlib.sha256(
+            seed_value.encode("utf-8")
+        ).digest()
+
+        numeric_value = int.from_bytes(
+            digest[:4],
+            byteorder="big",
         )
 
         return IPv4Address(numeric_value)

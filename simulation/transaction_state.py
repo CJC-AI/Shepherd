@@ -4,9 +4,10 @@ Represent the simulation state of a bank transaction.
 This module defines the in-memory transaction representation used by the
 Shepherd simulation before transactions are persisted to PostgreSQL.
 
-The state object intentionally contains only transaction-level information.
-Customer, account, device, and merchant behavior remains in their respective
-simulation state objects and is joined through their identifiers.
+The simulation state contains transaction-level information, including
+transaction_country, which is useful for generating and validating synthetic
+geographic behavior. The persistence layer may choose which fields are stored
+in the database.
 """
 
 from dataclasses import dataclass
@@ -36,6 +37,10 @@ class TransactionState:
         Three-letter ISO-style currency code used for the transaction.
     transaction_timestamp:
         Simulation timestamp at which the transaction occurs.
+    transaction_country:
+        Country in which the transaction is simulated to occur. This is
+        simulation metadata used to model geographic behavior and may later be
+        persisted or replaced by a derived location representation.
     ip_address:
         IPv4 address associated with the transaction.
     is_fraud:
@@ -50,5 +55,6 @@ class TransactionState:
     amount: float
     currency: str
     transaction_timestamp: datetime
+    transaction_country: str
     ip_address: IPv4Address
     is_fraud: bool | None = None
