@@ -6,6 +6,9 @@ __pycache__/
 # C extensions
 *.so
 
+# Generated ML artifacts
+artifacts/features/*.parquet
+
 # Distribution / packaging
 .Python
 build/

@@ -9,7 +9,7 @@ devices.
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String
 from sqlalchemy.dialects.postgresql import INET, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,6 +26,14 @@ class Transaction(Base):
     """
 
     __tablename__ = "transactions"
+
+    __table_args__ = (
+        Index(
+            "ix_transactions_account_timestamp",
+            "account_id",
+            "transaction_timestamp",
+        ),
+    )
 
     transaction_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

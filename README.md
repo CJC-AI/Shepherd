@@ -1162,3 +1162,1096 @@ Transactions, predictions, model versions, thresholds, and evaluation results sh
 **Dataset:** 2,932,534 persisted transactions.  
 **Fraud labels:** 146,646 fraud / 2,785,888 non-fraud / 0 unlabeled.  
 **Next milestone:** Leakage-safe feature engineering and fraud-model development.
+
+# Shepherd — Phase 3: Fraud Feature Engineering & ML Dataset
+
+## Overview
+
+**Shepherd** is an enterprise-oriented fraud detection platform designed to identify suspicious financial transactions using behavioral, transactional, device, merchant, and temporal signals.
+
+Phase 1 established the **banking data model and persistence layer**.
+
+Phase 2 populated that environment with a **synthetic financial population and nearly three million labeled transactions**.
+
+Phase 3 transforms that raw transaction history into a **machine-learning-ready fraud feature dataset**.
+
+The central problem in this phase was not simply:
+
+> "How do we create features?"
+
+It was:
+
+> **"How do we create features using only information that would have been available at the moment a transaction occurred?"**
+
+That requirement makes temporal correctness and leakage prevention the primary design constraints of Phase 3.
+
+---
+
+# Phase 3 Objectives
+
+Phase 3 was designed to:
+
+* Convert raw transaction history into ML features
+* Preserve chronological causality
+* Prevent future information from leaking into historical features
+* Generate customer behavioral features
+* Generate transaction velocity features
+* Generate device and merchant context
+* Generate historical spending features
+* Produce a reproducible feature dataset
+* Process the full transaction population without requiring the entire dataset in memory
+* Validate the resulting dataset before model training
+
+The completed pipeline is:
+
+```text
+                    PostgreSQL
+                        │
+                        ▼
+                 Raw Transactions
+                        │
+                        ▼
+             Chronological Processing
+                        │
+                        ▼
+                 FeatureEngine
+                        │
+            ┌───────────┼───────────┐
+            │           │           │
+            ▼           ▼           ▼
+        Customer     Transaction   Context
+        History       Velocity     Signals
+            │           │           │
+            └───────────┼───────────┘
+                        │
+                        ▼
+              Feature Dataset
+                        │
+                        ▼
+             Automated Validation
+                        │
+                        ▼
+        transaction_features.parquet
+```
+
+---
+
+# The Core Design Problem: Temporal Leakage
+
+Fraud detection is fundamentally different from many standard tabular ML problems.
+
+At transaction time `T`, Shepherd can only use information that was available **before or at `T`**.
+
+For example:
+
+```text
+T-3 ───── T-2 ───── T-1 ───── T
+                                  ▲
+                            Transaction
+                            being scored
+```
+
+Valid information:
+
+```text
+T-3
+T-2
+T-1
+```
+
+Invalid information:
+
+```text
+T+1
+T+2
+T+3
+```
+
+A feature such as:
+
+```text
+customer_average_transaction_amount
+```
+
+must therefore represent the customer's historical average **before the current transaction**.
+
+It cannot include the current transaction itself.
+
+Otherwise the model would receive information about the event it is supposed to predict.
+
+---
+
+# Chronological Feature Generation
+
+Shepherd processes transactions globally in chronological order.
+
+The feature pipeline streams transactions from PostgreSQL ordered by:
+
+```text
+transaction_timestamp
+transaction_id
+```
+
+This establishes deterministic chronological processing.
+
+Conceptually:
+
+```text
+Transaction 1
+     │
+     ▼
+Update historical state
+     │
+     ▼
+Transaction 2
+     │
+     ▼
+Update historical state
+     │
+     ▼
+Transaction 3
+     │
+     ▼
+...
+```
+
+The important rule is:
+
+> **Generate features first → then update historical state.**
+
+This ensures that the current transaction cannot influence its own features.
+
+---
+
+# Stateful Feature Engineering
+
+The `FeatureEngine` maintains historical state while processing the transaction stream.
+
+For each customer, Shepherd can maintain information such as:
+
+```text
+Customer History
+│
+├── Previous transaction timestamp
+├── Number of previous transactions
+├── Historical amount statistics
+├── Known merchants/categories
+└── Recent transaction timestamps
+```
+
+This state is updated as transactions are processed.
+
+The result is a feature vector representing the customer's state **immediately before the transaction**.
+
+---
+
+# Feature Dataset
+
+The completed feature dataset contains:
+
+| Metric                      |         Value |
+| --------------------------- | ------------: |
+| Rows                        | **2,932,534** |
+| Unique transactions         | **2,932,534** |
+| Fraudulent transactions     |   **146,646** |
+| Non-fraudulent transactions | **2,785,888** |
+| Fraud rate                  |   **5.0007%** |
+| Target                      |    `is_fraud` |
+
+Every source transaction therefore maps to exactly one feature row.
+
+```text
+1 transaction
+      │
+      ▼
+1 feature vector
+      │
+      ▼
+1 fraud label
+```
+
+---
+
+# Feature Groups
+
+The Phase 3 dataset contains features covering several dimensions of transaction behavior.
+
+## 1. Transaction Amount
+
+### `amount`
+
+The raw transaction amount.
+
+This provides the model with the absolute monetary value of the transaction.
+
+Example:
+
+```text
+Customer normally:
+$20 → $80
+
+Current transaction:
+$1,200
+```
+
+The raw amount alone is not enough to determine whether this is suspicious.
+
+That is why Shepherd also generates behavioral features.
+
+---
+
+# 2. Merchant Risk
+
+### `merchant_risk_score`
+
+A merchant-level risk signal associated with the transaction.
+
+This allows the model to distinguish between transactions occurring in different merchant risk environments.
+
+Conceptually:
+
+```text
+Transaction
+     │
+     ▼
+Merchant
+     │
+     ▼
+Merchant Risk Signal
+```
+
+Merchant context can become especially valuable when combined with customer history.
+
+---
+
+# 3. Geographic Behavior
+
+### `is_home_country`
+
+Indicates whether the transaction occurred in the customer's home country.
+
+This creates a basic geographic behavioral signal:
+
+```text
+Customer home country
+        │
+        ▼
+Current transaction country
+        │
+        ├── Match → expected
+        │
+        └── Different → potentially unusual
+```
+
+This feature is deliberately simple.
+
+The model can later combine it with other signals rather than treating international activity as inherently fraudulent.
+
+---
+
+# 4. Device Behavior
+
+### `device_age_hours`
+
+Represents the age of the device associated with the transaction.
+
+Device age provides temporal context around device usage.
+
+For example:
+
+```text
+Known device
+     vs.
+Very recently introduced device
+```
+
+A new device may be perfectly legitimate, but it can become informative when combined with other behavioral signals.
+
+---
+
+# 5. Transaction History
+
+### `transactions_before`
+
+Number of transactions previously observed for the customer.
+
+This provides a basic measure of historical activity.
+
+```text
+transactions_before = 0
+```
+
+indicates a customer's first observed transaction.
+
+While:
+
+```text
+transactions_before = 450
+```
+
+indicates a customer with substantial historical behavior.
+
+This distinction becomes important when interpreting other features.
+
+---
+
+# 6. Historical Spending
+
+### `avg_amount_before`
+
+The customer's average transaction amount **before the current transaction**.
+
+This feature establishes a behavioral baseline.
+
+Example:
+
+```text
+Historical average = $45
+Current transaction = $500
+```
+
+The absolute amount is useful.
+
+The deviation from the customer's own behavior is often more informative.
+
+---
+
+# 7. Amount Deviation
+
+### `amount_vs_avg`
+
+Measures the current transaction amount relative to the customer's historical average.
+
+Conceptually:
+
+```text
+Current Amount
+      │
+      ▼
+Historical Average
+      │
+      ▼
+Behavioral Deviation
+```
+
+This allows Shepherd to distinguish between:
+
+```text
+$500 transaction for a customer who normally spends $600
+```
+
+and:
+
+```text
+$500 transaction for a customer who normally spends $30
+```
+
+The same absolute amount can therefore represent very different behavioral contexts.
+
+---
+
+# 8. Time Since Previous Transaction
+
+### `seconds_since_previous_tx`
+
+Measures the time elapsed since the customer's previous transaction.
+
+This enables Shepherd to identify transaction timing patterns.
+
+For example:
+
+```text
+Transaction A
+     │
+     │  2 days
+     ▼
+Transaction B
+```
+
+versus:
+
+```text
+Transaction A
+     │
+     │  8 seconds
+     ▼
+Transaction B
+```
+
+The latter may become important when combined with transaction velocity and other signals.
+
+### First-transaction behavior
+
+There are **10,000 expected NULL values** for this feature.
+
+These correspond to customers for whom Shepherd has no previous transaction.
+
+This is not treated as an unexpected data-quality failure.
+
+It is a legitimate representation of:
+
+```text
+First observed transaction
+        ↓
+No previous transaction
+        ↓
+seconds_since_previous_tx = NULL
+```
+
+---
+
+# 9. Short-Term Transaction Velocity
+
+Shepherd generates transaction counts across multiple time windows.
+
+### `tx_count_10m`
+
+Number of transactions in the previous 10 minutes.
+
+### `tx_count_1h`
+
+Number of transactions in the previous hour.
+
+### `tx_count_24h`
+
+Number of transactions in the previous 24 hours.
+
+This gives the model multiple temporal resolutions.
+
+```text
+                Customer activity
+                       │
+        ┌──────────────┼──────────────┐
+        ▼              ▼              ▼
+      10 min          1 hour         24 hours
+```
+
+This matters because suspicious activity can appear as either:
+
+* A sudden burst over seconds/minutes
+* Unusual hourly activity
+* An abnormal increase in daily activity
+
+---
+
+# 10. Merchant Familiarity
+
+### `merchant_category_seen_before`
+
+Indicates whether the customer has previously interacted with the relevant merchant category.
+
+This creates a behavioral familiarity signal.
+
+Conceptually:
+
+```text
+Customer history
+      │
+      ▼
+Merchant categories previously seen
+      │
+      ▼
+Current merchant category
+      │
+      ▼
+Seen before?
+```
+
+A previously unseen category is not automatically fraudulent.
+
+It is simply an additional signal that the model can combine with other evidence.
+
+---
+
+# Final Feature Set
+
+The completed Phase 3 dataset contains the following core feature columns:
+
+```text
+amount
+merchant_risk_score
+is_home_country
+device_age_hours
+transactions_before
+avg_amount_before
+amount_vs_avg
+seconds_since_previous_tx
+tx_count_10m
+tx_count_1h
+tx_count_24h
+merchant_category_seen_before
+```
+
+Target:
+
+```text
+is_fraud
+```
+
+---
+
+# Leakage-Safe Feature Construction
+
+The most important architectural property of Phase 3 is the ordering of operations.
+
+For each transaction:
+
+```text
+1. Read transaction
+       │
+       ▼
+2. Read historical state
+       │
+       ▼
+3. Generate features
+       │
+       ▼
+4. Write feature row
+       │
+       ▼
+5. Update historical state
+       │
+       ▼
+6. Move to next transaction
+```
+
+The order is intentional.
+
+If Shepherd instead performed:
+
+```text
+1. Update state
+2. Generate features
+```
+
+the current transaction could contaminate its own historical statistics.
+
+That would create temporal leakage.
+
+---
+
+# Memory-Efficient Processing
+
+The dataset contains almost three million transactions.
+
+Loading the entire transaction table and all intermediate feature state into memory would unnecessarily increase resource requirements.
+
+Phase 3 therefore uses a streaming approach.
+
+```text
+PostgreSQL
+     │
+     ▼
+Transaction stream
+     │
+     ▼
+FeatureEngine
+     │
+     ▼
+Bounded historical state
+     │
+     ▼
+Parquet output
+```
+
+The generated dataset is written as a compressed **Zstandard (Zstd) Parquet** artifact.
+
+Output:
+
+```text
+artifacts/features/transaction_features.parquet
+```
+
+This provides an efficient columnar representation suitable for downstream ML workloads.
+
+---
+
+# Why Parquet?
+
+Parquet is well suited to the feature dataset because:
+
+* It is columnar
+* Numeric feature columns can be read selectively
+* It provides efficient compression
+* It is substantially more appropriate for ML datasets than repeatedly parsing CSV
+* It works well with Python data tooling
+* It provides a clean boundary between feature generation and model training
+
+The feature pipeline therefore produces a durable ML artifact rather than requiring feature computation to be repeated every time a model is trained.
+
+---
+
+# Feature Dataset Audit
+
+After generation, Shepherd runs an automated feature-dataset audit.
+
+The audit checks several classes of failure.
+
+## Row integrity
+
+```text
+Rows:
+2,932,534
+
+Unique transaction IDs:
+2,932,534
+```
+
+Therefore:
+
+```text
+1 row ↔ 1 transaction
+```
+
+No duplicate transaction feature rows were detected.
+
+---
+
+## Target integrity
+
+The dataset contains:
+
+```text
+Fraud:
+146,646
+
+Non-fraud:
+2,785,888
+```
+
+Fraud rate:
+
+```text
+5.0007%
+```
+
+This matches the underlying simulated transaction population.
+
+---
+
+# Null Validation
+
+The audit reports:
+
+```text
+Unexpected null values:
+0
+```
+
+The only expected missing values are the:
+
+```text
+10,000
+```
+
+`seconds_since_previous_tx` values associated with first transactions.
+
+This distinction is important.
+
+The validation system does not simply demand:
+
+> "There must be zero NULLs."
+
+Instead, it asks:
+
+> **"Are the NULLs expected and explainable?"**
+
+That is a more appropriate approach for production feature pipelines.
+
+---
+
+# Numeric Validation
+
+The audit also checks numeric features for non-finite values.
+
+Result:
+
+```text
+Non-finite numeric values:
+0
+```
+
+No unexpected:
+
+```text
+NaN
++∞
+-∞
+```
+
+values were detected.
+
+---
+
+# Feature Range Validation
+
+Expected feature ranges were checked against the generated dataset.
+
+Result:
+
+```text
+Feature range checks:
+PASS
+```
+
+This protects the downstream model-training pipeline from obvious corrupted or impossible feature values.
+
+---
+
+# Chronological Validation
+
+The feature dataset was also checked for chronological consistency.
+
+The feature-generation process is explicitly chronological, and the audit verifies that the resulting data preserves the intended transaction ordering.
+
+This is critical because the validity of historical features depends on temporal ordering.
+
+---
+
+# Phase 3 Architecture
+
+The completed architecture can be summarized as:
+
+```text
+                    PostgreSQL
+                        │
+                        │ chronological stream
+                        ▼
+              ┌──────────────────┐
+              │   FeatureEngine  │
+              └────────┬─────────┘
+                       │
+        ┌──────────────┼───────────────┐
+        │              │               │
+        ▼              ▼               ▼
+   Customer         Velocity        Context
+    History         Features        Features
+        │              │               │
+        └──────────────┼───────────────┘
+                       │
+                       ▼
+             Feature Dataset
+                       │
+                       ▼
+          Automated Feature Audit
+                       │
+                       ▼
+     transaction_features.parquet
+```
+
+---
+
+# Phase 1 → Phase 2 → Phase 3
+
+Shepherd is now developing as a layered system.
+
+## Phase 1 — Banking Infrastructure
+
+Built the synthetic bank's persistent structure.
+
+```text
+Customers
+Accounts
+Devices
+Merchants
+Transactions
+Fraud Predictions
+Model Registry
+```
+
+---
+
+## Phase 2 — Synthetic Financial Activity
+
+Populated the bank with realistic behavioral activity.
+
+```text
+10,000 customers
+       │
+       ▼
+Accounts + Devices + Merchants
+       │
+       ▼
+2,932,534 transactions
+       │
+       ▼
+146,646 fraud labels
+```
+
+---
+
+## Phase 3 — Machine Learning Representation
+
+Converted raw transactions into model-readable behavioral representations.
+
+```text
+2,932,534 transactions
+          │
+          ▼
+Temporal Feature Engine
+          │
+          ▼
+Behavioral Features
+          │
+          ▼
+Validated Feature Dataset
+          │
+          ▼
+transaction_features.parquet
+```
+
+The result is the first point at which Shepherd has a proper **ML-ready representation of its synthetic bank**.
+
+---
+
+# Why Phase 3 Matters
+
+The database tells Shepherd:
+
+> **What happened?**
+
+Phase 3 begins to answer:
+
+> **What was normal for this customer before it happened?**
+
+For example:
+
+```text
+RAW TRANSACTION
+
+Amount: $850
+```
+
+is relatively weak information.
+
+Phase 3 can transform that into:
+
+```text
+Amount:                 $850
+Customer average:       $42
+Amount vs average:      High
+Transactions in 10 min: 5
+Transactions in 1 hour: 8
+Device age:             2 hours
+Merchant category:     Previously unseen
+Home country:           No
+```
+
+The transaction is no longer just a row in a database.
+
+It has become a **behavioral event**.
+
+That is the representation a fraud model can reason about.
+
+---
+
+# Phase 3 Validation Summary
+
+The completed feature-generation pipeline produced:
+
+```text
+Rows                         2,932,534
+Unique transaction IDs      2,932,534
+Fraud                       146,646
+Non-fraud                   2,785,888
+Fraud rate                  5.0007%
+
+Unexpected NULLs            0
+Expected first-tx NULLs     10,000
+Non-finite numeric values   0
+Feature range checks        PASS
+Chronological validation    PASS
+```
+
+This gives Shepherd a validated foundation for model development.
+
+---
+
+# Output Artifact
+
+The primary Phase 3 artifact is:
+
+```text
+artifacts/
+└── features/
+    └── transaction_features.parquet
+```
+
+This file represents the boundary between:
+
+```text
+DATA ENGINEERING
+        │
+        ▼
+FEATURE ENGINEERING
+        │
+        ▼
+──────── PHASE 3 OUTPUT ────────
+        │
+        ▼
+MACHINE LEARNING
+```
+
+---
+
+# What Phase 3 Does Not Do
+
+Phase 3 deliberately stops at the creation and validation of the ML feature dataset.
+
+It does **not** yet represent the final fraud model.
+
+The following belong to the next stage:
+
+* Chronological train/validation/test splitting
+* Model training
+* Baseline model development
+* XGBoost training
+* Model comparison
+* PR-AUC evaluation
+* ROC-AUC evaluation
+* Recall at target precision
+* Threshold selection
+* Model artifact registration
+* Production fraud scoring
+
+This separation is intentional.
+
+A reliable fraud model should be built **after** the feature pipeline has been independently validated.
+
+---
+
+# Phase 4 Preview
+
+The next stage consumes the Phase 3 artifact:
+
+```text
+transaction_features.parquet
+             │
+             ▼
+      Chronological Split
+             │
+       ┌─────┴─────┐
+       ▼           ▼
+   Training     Validation
+       │           │
+       └─────┬─────┘
+             ▼
+       Fraud Models
+             │
+             ▼
+       Model Evaluation
+             │
+             ▼
+       Selected Model
+             │
+             ▼
+       Model Registry
+```
+
+The objective is to teach Shepherd how to distinguish normal transactions from fraudulent ones using the behavioral representation constructed in Phase 3.
+
+---
+
+# Engineering Principles
+
+Phase 3 reinforces several principles that will remain central to Shepherd.
+
+## 1. Temporal causality over convenience
+
+A feature is only valid if it could have existed when the transaction occurred.
+
+## 2. Behavior over isolated values
+
+A transaction amount becomes more meaningful when compared with the customer's history.
+
+## 3. Explicit state
+
+Historical customer behavior is maintained explicitly rather than reconstructed inconsistently during training.
+
+## 4. Streaming over brute force
+
+Large transaction populations should not require loading the entire dataset into memory.
+
+## 5. Validate the data before validating the model
+
+A model cannot compensate for a broken feature pipeline.
+
+## 6. Separate feature generation from model training
+
+The feature dataset is a reusable artifact that can support multiple experiments and models.
+
+---
+
+# Phase 3 Status
+
+**Status: COMPLETE**
+
+### Delivered
+
+* [x] Chronological transaction streaming
+* [x] Stateful feature engineering
+* [x] Leakage-safe historical features
+* [x] Transaction amount features
+* [x] Merchant risk features
+* [x] Geographic features
+* [x] Device features
+* [x] Customer historical behavior
+* [x] Transaction velocity features
+* [x] Merchant familiarity features
+* [x] Full 2,932,534-row feature dataset
+* [x] Zstd-compressed Parquet artifact
+* [x] Automated feature audit
+* [x] Duplicate-ID validation
+* [x] Null validation
+* [x] Numeric finite-value validation
+* [x] Feature range validation
+* [x] Chronological validation
+
+---
+
+# Final Phase 3 Outcome
+
+Phase 1 gave Shepherd a **bank**.
+
+Phase 2 gave the bank **customers and financial activity**.
+
+Phase 3 gave Shepherd the ability to describe that activity in terms of **behavior**.
+
+```text
+                    SHEPHERD
+
+       ┌─────────────────────────────┐
+       │       SYNTHETIC BANK        │
+       │                             │
+       │ Customers                   │
+       │ Accounts                    │
+       │ Devices                     │
+       │ Merchants                   │
+       │ Transactions                │
+       └──────────────┬──────────────┘
+                      │
+                      ▼
+             HISTORICAL BEHAVIOR
+                      │
+                      ▼
+             FEATURE ENGINEERING
+                      │
+                      ▼
+           ┌──────────────────────┐
+           │ ML FEATURE DATASET    │
+           │                      │
+           │ 2,932,534 rows       │
+           │ 12 core features     │
+           │ 146,646 fraud labels │
+           └──────────┬───────────┘
+                      │
+                      ▼
+                PHASE 4
+              FRAUD MODEL
+```
+
+The key achievement of Phase 3 is therefore not simply the creation of twelve columns.
+
+It is the establishment of a **leakage-safe, reproducible feature-generation system that converts Shepherd's simulated banking history into a representation suitable for machine learning.**
+
+**Phase 3 complete.**
