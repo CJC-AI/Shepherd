@@ -1,0 +1,14 @@
+[
+  "amount",
+  "merchant_risk_score",
+  "is_home_country",
+  "device_age_hours",
+  "transactions_before",
+  "avg_amount_before",
+  "amount_vs_avg",
+  "seconds_since_previous_tx",
+  "tx_count_10m",
+  "tx_count_1h",
+  "tx_count_24h",
+  "merchant_category_seen_before"
+]

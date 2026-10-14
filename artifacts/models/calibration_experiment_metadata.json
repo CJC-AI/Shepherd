@@ -1,0 +1,94 @@
+{
+  "experiment_name": "shepherd_probability_calibration",
+  "feature_dataset": "artifacts\\features\\transaction_features.parquet",
+  "model_artifact": "artifacts\\models\\xgboost_calibration_base.json",
+  "calibrator_artifact": "artifacts\\models\\calibrators.joblib",
+  "feature_list_artifact": "artifacts\\models\\xgboost_calibration_base_features.json",
+  "model_features": [
+    "amount",
+    "merchant_risk_score",
+    "is_home_country",
+    "device_age_hours",
+    "transactions_before",
+    "avg_amount_before",
+    "amount_vs_avg",
+    "seconds_since_previous_tx",
+    "tx_count_10m",
+    "tx_count_1h",
+    "tx_count_24h",
+    "merchant_category_seen_before"
+  ],
+  "split_fractions": {
+    "training": 0.6,
+    "calibration": 0.09999999999999998,
+    "validation": 0.15000000000000002,
+    "test": 0.15000000000000002
+  },
+  "boost_rounds": 374,
+  "random_state": 42,
+  "partitions": {
+    "training": {
+      "name": "training",
+      "rows": 1759520,
+      "fraud_count": 77901,
+      "fraud_rate": 0.044274006547240154,
+      "first_timestamp": "2026-06-02 02:35:02.384041+00:00",
+      "last_timestamp": "2026-08-11 14:05:22.916630+00:00"
+    },
+    "calibration": {
+      "name": "calibration",
+      "rows": 293253,
+      "fraud_count": 14414,
+      "fraud_rate": 0.04915209733574763,
+      "first_timestamp": "2026-08-11 14:05:25.060112+00:00",
+      "last_timestamp": "2026-08-16 11:09:58.447732+00:00"
+    },
+    "validation": {
+      "name": "validation",
+      "rows": 439880,
+      "fraud_count": 23251,
+      "fraud_rate": 0.05285759752659816,
+      "first_timestamp": "2026-08-16 11:09:58.678934+00:00",
+      "last_timestamp": "2026-08-23 09:08:50.842095+00:00"
+    },
+    "test_reserved": {
+      "name": "test",
+      "rows": 439881,
+      "fraud_count": 31080,
+      "fraud_rate": 0.07065547273012474,
+      "first_timestamp": "2026-08-23 09:08:52.015867+00:00",
+      "last_timestamp": "2026-08-29 23:59:59.644672+00:00"
+    }
+  },
+  "validation_metrics": {
+    "raw": {
+      "pr_auc": 0.5221512912516061,
+      "roc_auc": 0.9228092250935984,
+      "brier_score": 0.1298285982054183,
+      "log_loss": 0.36451758230139925,
+      "ece_10_bins": 0.1956288143470466
+    },
+    "sigmoid": {
+      "pr_auc": 0.5221513688523632,
+      "roc_auc": 0.9228092249903677,
+      "brier_score": 0.03417670698479076,
+      "log_loss": 0.12049948455276026,
+      "ece_10_bins": 0.002850263868115835
+    },
+    "isotonic": {
+      "pr_auc": 0.512425812637409,
+      "roc_auc": 0.9226821003074658,
+      "brier_score": 0.034166744393899745,
+      "log_loss": 0.1208226121920188,
+      "ece_10_bins": 0.0022340676883558955
+    }
+  },
+  "notes": [
+    "The existing baseline artifacts were not overwritten.",
+    "Sigmoid calibration uses XGBoost raw margins.",
+    "Isotonic calibration uses XGBoost probabilities.",
+    "Validation labels were not used to fit the calibrators.",
+    "The final chronological test period was reserved for later evaluation and was not scored by this script.",
+    "The test period has previously been examined for the original baseline, so it should not be described as completely unseen at the overall project level."
+  ]
+}
