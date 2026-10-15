@@ -1,0 +1,26 @@
+{
+  "experiment_name": "shepherd_shap_explainability",
+  "model_artifact": "artifacts\\models\\xgboost_calibration_base.json",
+  "calibrator_artifact": "artifacts\\models\\calibrators.joblib",
+  "feature_dataset": "artifacts\\features\\transaction_features.parquet",
+  "calibration_method": "sigmoid",
+  "explained_output": "XGBoost raw margin (log-odds), before sigmoid calibration",
+  "shap_method": "TreeExplainer",
+  "feature_perturbation": "tree_path_dependent",
+  "validation_sample_size": 5000,
+  "validation_sample_fraud_rate": 0.055,
+  "local_examples_saved": 10,
+  "local_example_selection": "Highest sigmoid-calibrated fraud probabilities in the sampled validation dataset.",
+  "random_state": 42,
+  "global_importance_artifact": "artifacts\\explainability\\shap_global_importance.csv",
+  "beeswarm_plot": "artifacts\\explainability\\shap_summary_beeswarm.png",
+  "global_bar_plot": "artifacts\\explainability\\shap_global_bar.png",
+  "dependence_plot": "artifacts\\explainability\\shap_tx_count_10m_dependence.png",
+  "local_explanations_artifact": "artifacts\\explainability\\shap_local_explanations.csv",
+  "notes": [
+    "Only validation data was used for explanations.",
+    "The reserved test period was not used.",
+    "SHAP values explain model raw margins rather than calibrated probability differences.",
+    "SHAP associations describe model behavior, not causal proof that a transaction is fraudulent."
+  ]
+}
