@@ -1,79 +1,59 @@
-"""Expose Shepherd's calibrated fraud scorer through a FastAPI service.
+"""Expose Shepherd's calibrated fraud scorer through FastAPI.
 
-The service loads its model and sigmoid calibrator once during application
-startup. Clients submit a transaction identifier, an optional transaction
-timestamp, and the complete feature mapping required by the model.
+The application loads the model during startup and persists each successful
+prediction to PostgreSQL before returning its response.
 
 Endpoints:
-    GET  /health   Check whether the scoring service is ready.
-    POST /v1/score Score one transaction and return an auditable decision.
+    GET  /health   Check model and database readiness.
+    POST /v1/score Score a transaction and persist its prediction.
 
-The response includes the calibrated fraud probability, decision threshold,
-decision, model version, raw XGBoost margin, and timestamps.
-
-This initial API is intended for local development. It does not implement
-authentication, authorization, rate limiting, or durable prediction storage.
-
-Usage:
-    python -m uvicorn scoring.api:app --host 127.0.0.1 --port 8000
+This is a local-development service. Authentication, authorization, rate
+limiting, and production deployment hardening are not implemented here.
 """
 
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Literal
+from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from database.repositories.fraud_prediction_repository import (
+    FraudPredictionRepository,
+    PredictionPersistenceError,
+    TransactionNotFoundError,
+)
 from scoring.predictor import FraudScorer
 
 
-class ScoreRequest(BaseModel):
-    """Represent a transaction-scoring API request.
+logger = logging.getLogger(__name__)
 
-    Attributes:
-        transaction_id: Non-empty identifier for the transaction.
-        transaction_timestamp: Optional timezone-aware transaction timestamp.
-        features: Mapping containing all the model's required features.
-    """
+
+class ScoreRequest(BaseModel):
+    """Represent a transaction-scoring request."""
 
     model_config = ConfigDict(extra="forbid")
 
-    transaction_id: str = Field(
-        min_length=1,
-        description="Unique transaction identifier.",
+    transaction_id: UUID = Field(
+        description="UUID of an existing transaction in PostgreSQL."
     )
 
     transaction_timestamp: datetime | None = Field(
         default=None,
-        description="Transaction time, preferably expressed in UTC.",
+        description="Optional timezone-aware transaction timestamp.",
     )
 
     features: dict[str, float | None] = Field(
-        description=(
-            "Complete model feature mapping. "
-            "The fraud target must not be included."
-        )
+        description="Complete feature mapping required by the model."
     )
 
 
 class ScoreResponse(BaseModel):
-    """Represent the auditable result returned by the scoring endpoint.
+    """Represent the persisted scoring result returned by the API."""
 
-    Attributes:
-        transaction_id: Transaction identifier supplied by the client.
-        transaction_timestamp_utc: Transaction time converted to UTC.
-        model_version: Version of the model used for inference.
-        calibration_method: Probability calibration method.
-        fraud_probability: Calibrated fraud probability between zero and one.
-        threshold: Frozen alert threshold.
-        decision: REVIEW or NO_ALERT.
-        decision_reason: Machine-readable reason for the decision.
-        alert_triggered: Whether the threshold was met.
-        raw_model_margin: XGBoost raw margin before sigmoid calibration.
-        scored_at_utc: Timestamp at which the scoring decision was created.
-    """
-
+    prediction_id: UUID
     transaction_id: str
     transaction_timestamp_utc: str | None
     model_version: str
@@ -88,65 +68,39 @@ class ScoreResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    """Represent the scoring service's readiness status.
-
-    Attributes:
-        status: Readiness status of the API.
-        model_version: Loaded model version.
-    """
+    """Represent readiness of the scoring model and database."""
 
     status: Literal["ready"]
     model_version: str
+    database_status: Literal["connected"]
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    """Load scoring artifacts once and manage their application lifecycle.
-
-    Args:
-        application: FastAPI application instance.
-
-    Yields:
-        Control to the running application after model initialization.
-
-    Raises:
-        FileNotFoundError:
-            If a required scoring artifact is missing.
-        ValueError:
-            If the model or calibration artifacts are invalid.
-    """
+    """Initialize the scoring component and prediction repository."""
     application.state.scorer = FraudScorer()
+    application.state.prediction_repository = FraudPredictionRepository()
 
     try:
         yield
     finally:
         application.state.scorer = None
+        application.state.prediction_repository = None
 
 
 app = FastAPI(
     title="Shepherd Fraud Scoring API",
     description=(
-        "Score transactions using Shepherd's XGBoost model and "
-        "sigmoid-calibrated fraud probabilities."
+        "Score transactions with Shepherd's sigmoid-calibrated XGBoost "
+        "model and persist decisions to PostgreSQL."
     ),
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
 
 def get_scorer(request: Request) -> FraudScorer:
-    """Return the initialized scorer for an incoming request.
-
-    Args:
-        request: Incoming FastAPI request.
-
-    Returns:
-        The scorer loaded during application startup.
-
-    Raises:
-        HTTPException:
-            If the scoring component is not ready.
-    """
+    """Return the initialized scorer or raise a readiness error."""
     scorer = getattr(request.app.state, "scorer", None)
 
     if not isinstance(scorer, FraudScorer):
@@ -158,60 +112,79 @@ def get_scorer(request: Request) -> FraudScorer:
     return scorer
 
 
+def get_repository(request: Request) -> FraudPredictionRepository:
+    """Return the initialized prediction repository."""
+    repository = getattr(
+        request.app.state,
+        "prediction_repository",
+        None,
+    )
+
+    if not isinstance(repository, FraudPredictionRepository):
+        raise HTTPException(
+            status_code=503,
+            detail="Prediction persistence is not ready.",
+        )
+
+    return repository
+
+
 @app.get(
     "/health",
     response_model=HealthResponse,
-    summary="Check scoring service readiness",
+    summary="Check model and database readiness",
 )
 def health(request: Request) -> HealthResponse:
-    """Report whether model artifacts have been loaded successfully.
-
-    Args:
-        request: Incoming health-check request.
-
-    Returns:
-        Readiness status and loaded model version.
-
-    Raises:
-        HTTPException:
-            If the scoring service has not initialized.
-    """
+    """Verify that the scorer is loaded and PostgreSQL is reachable."""
     scorer = get_scorer(request)
+    repository = get_repository(request)
+
+    try:
+        repository.check_connection()
+    except PredictionPersistenceError as exc:
+        logger.exception("PostgreSQL readiness check failed.")
+
+        raise HTTPException(
+            status_code=503,
+            detail="Prediction database is unavailable.",
+        ) from exc
 
     return HealthResponse(
         status="ready",
         model_version=scorer.model_version,
+        database_status="connected",
     )
 
 
 @app.post(
     "/v1/score",
     response_model=ScoreResponse,
-    summary="Score a transaction",
+    summary="Score and persist a transaction",
 )
 def score_transaction(
     payload: ScoreRequest,
     request: Request,
 ) -> ScoreResponse:
-    """Score a single transaction and return its auditable decision.
+    """Score a transaction, persist its decision, and return the audit record.
 
-    The API verifies that the feature mapping contains exactly the feature
-    names expected by the loaded model. Invalid inputs receive an HTTP 422
-    response instead of being silently ignored.
+    A successful response means both inference and database persistence
+    completed. The transaction must already exist in PostgreSQL.
 
     Args:
-        payload: Validated transaction-scoring request.
+        payload: Validated request with transaction identifier and features.
         request: Incoming FastAPI request.
 
     Returns:
-        Calibrated fraud prediction and decision metadata.
+        The auditable prediction result, including its database prediction ID.
 
     Raises:
         HTTPException:
-            422 for invalid features or timestamps.
-            503 if the scorer is not ready.
+            404 if the transaction does not exist.
+            422 if the feature schema or feature values are invalid.
+            503 if PostgreSQL cannot persist the result.
     """
     scorer = get_scorer(request)
+    repository = get_repository(request)
 
     supplied_features = set(payload.features)
     expected_features = set(scorer.feature_columns)
@@ -242,7 +215,7 @@ def score_transaction(
 
     try:
         result = scorer.score_transaction(
-            transaction_id=payload.transaction_id,
+            transaction_id=str(payload.transaction_id),
             transaction_timestamp=payload.transaction_timestamp,
             features=payload.features,
         )
@@ -252,4 +225,29 @@ def score_transaction(
             detail=str(exc),
         ) from exc
 
-    return ScoreResponse(**result.to_dict())
+    try:
+        prediction_id = repository.save_prediction(
+            result.to_dict()
+        )
+    except TransactionNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="The referenced transaction does not exist.",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
+    except PredictionPersistenceError as exc:
+        logger.exception("Failed to persist fraud prediction.")
+
+        raise HTTPException(
+            status_code=503,
+            detail="The prediction could not be persisted.",
+        ) from exc
+
+    return ScoreResponse(
+        prediction_id=prediction_id,
+        **result.to_dict(),
+    )
