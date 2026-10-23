@@ -1,27 +1,34 @@
+
 """Expose Shepherd's calibrated fraud scorer through FastAPI.
 
-The application loads the model during startup and persists each successful
-prediction to PostgreSQL before returning its response.
+The model and calibrator load at application startup. Each scoring request
+must include an Idempotency-Key header.
+
+Repeated requests with the same key and equivalent payload return the
+original persisted result. Reusing the key for different input returns HTTP
+409 Conflict.
 
 Endpoints:
-    GET  /health   Check model and database readiness.
-    POST /v1/score Score a transaction and persist its prediction.
+    GET  /health
+    POST /v1/score
 
-This is a local-development service. Authentication, authorization, rate
-limiting, and production deployment hardening are not implemented here.
+This local-development service does not yet implement authentication,
+authorization, rate limiting, or production deployment hardening.
 """
 
+import hashlib
+import json
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
-from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from database.repositories.fraud_prediction_repository import (
     FraudPredictionRepository,
+    IdempotencyConflictError,
     PredictionPersistenceError,
     TransactionNotFoundError,
 )
@@ -32,12 +39,13 @@ logger = logging.getLogger(__name__)
 
 
 class ScoreRequest(BaseModel):
-    """Represent a transaction-scoring request."""
+    """Represent a validated transaction-scoring request."""
 
     model_config = ConfigDict(extra="forbid")
 
-    transaction_id: UUID = Field(
-        description="UUID of an existing transaction in PostgreSQL."
+    transaction_id: str = Field(
+        min_length=1,
+        description="UUID of an existing transaction in PostgreSQL.",
     )
 
     transaction_timestamp: datetime | None = Field(
@@ -46,14 +54,14 @@ class ScoreRequest(BaseModel):
     )
 
     features: dict[str, float | None] = Field(
-        description="Complete feature mapping required by the model."
+        description="Complete model feature mapping."
     )
 
 
 class ScoreResponse(BaseModel):
-    """Represent the persisted scoring result returned by the API."""
+    """Represent a persisted scoring decision."""
 
-    prediction_id: UUID
+    prediction_id: str
     transaction_id: str
     transaction_timestamp_utc: str | None
     model_version: str
@@ -68,7 +76,7 @@ class ScoreResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    """Represent readiness of the scoring model and database."""
+    """Represent scoring-model and database readiness."""
 
     status: Literal["ready"]
     model_version: str
@@ -77,7 +85,7 @@ class HealthResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    """Initialize the scoring component and prediction repository."""
+    """Initialize service dependencies and release application references."""
     application.state.scorer = FraudScorer()
     application.state.prediction_repository = FraudPredictionRepository()
 
@@ -91,10 +99,10 @@ async def lifespan(application: FastAPI):
 app = FastAPI(
     title="Shepherd Fraud Scoring API",
     description=(
-        "Score transactions with Shepherd's sigmoid-calibrated XGBoost "
-        "model and persist decisions to PostgreSQL."
+        "Score transactions with Shepherd's calibrated XGBoost model, "
+        "persist audit results, and support idempotent retries."
     ),
-    version="1.1.0",
+    version="1.2.0",
     lifespan=lifespan,
 )
 
@@ -127,6 +135,57 @@ def get_repository(request: Request) -> FraudPredictionRepository:
         )
 
     return repository
+
+
+def fingerprint_request(payload: ScoreRequest) -> str:
+    """Calculate a stable SHA-256 fingerprint of the scoring request.
+
+    The transaction timestamp is normalized to UTC so equivalent timestamps
+    expressed with different UTC offsets receive the same fingerprint.
+
+    Feature keys are sorted before serialization so JSON key order does not
+    affect the fingerprint.
+
+    Args:
+        payload: Validated request body.
+
+    Returns:
+        A 64-character lowercase SHA-256 digest.
+
+    Raises:
+        ValueError: If the timestamp or feature values cannot be normalized.
+    """
+    timestamp = payload.transaction_timestamp
+
+    if timestamp is not None:
+        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+            raise ValueError(
+                "transaction_timestamp must be timezone-aware."
+            )
+
+        timestamp_utc = timestamp.astimezone(timezone.utc).isoformat()
+    else:
+        timestamp_utc = None
+
+    canonical_payload = {
+        "transaction_id": payload.transaction_id,
+        "transaction_timestamp_utc": timestamp_utc,
+        "features": {
+            name: payload.features[name]
+            for name in sorted(payload.features)
+        },
+    }
+
+    canonical_json = json.dumps(
+        canonical_payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+    return hashlib.sha256(
+        canonical_json.encode("utf-8")
+    ).hexdigest()
 
 
 @app.get(
@@ -164,27 +223,46 @@ def health(request: Request) -> HealthResponse:
 def score_transaction(
     payload: ScoreRequest,
     request: Request,
+    response: Response,
+    idempotency_key: str = Header(
+        ...,
+        alias="Idempotency-Key",
+        min_length=1,
+        max_length=128,
+        description=(
+            "Unique client-generated key. Reuse it only when retrying "
+            "the exact same scoring request."
+        ),
+    ),
 ) -> ScoreResponse:
-    """Score a transaction, persist its decision, and return the audit record.
-
-    A successful response means both inference and database persistence
-    completed. The transaction must already exist in PostgreSQL.
+    """Score, persist, and return an auditable transaction decision.
 
     Args:
-        payload: Validated request with transaction identifier and features.
-        request: Incoming FastAPI request.
+        payload: Transaction identifier, timestamp, and feature mapping.
+        request: Incoming request context.
+        response: FastAPI response object for setting replay headers.
+        idempotency_key: Client-generated unique request key.
 
     Returns:
-        The auditable prediction result, including its database prediction ID.
+        Persisted prediction record.
 
     Raises:
         HTTPException:
             404 if the transaction does not exist.
-            422 if the feature schema or feature values are invalid.
-            503 if PostgreSQL cannot persist the result.
+            409 if a key is reused with a different payload.
+            422 for invalid input.
+            503 if persistence or scoring readiness fails.
     """
     scorer = get_scorer(request)
     repository = get_repository(request)
+
+    idempotency_key = idempotency_key.strip()
+
+    if not idempotency_key:
+        raise HTTPException(
+            status_code=422,
+            detail="Idempotency-Key must not be empty.",
+        )
 
     supplied_features = set(payload.features)
     expected_features = set(scorer.feature_columns)
@@ -214,8 +292,40 @@ def score_transaction(
         )
 
     try:
-        result = scorer.score_transaction(
-            transaction_id=str(payload.transaction_id),
+        request_fingerprint = fingerprint_request(payload)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
+
+    # Fast path: return the original stored result without rescoring.
+    try:
+        existing = repository.find_idempotent_result(
+            idempotency_key,
+            request_fingerprint,
+        )
+    except IdempotencyConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+    except PredictionPersistenceError as exc:
+        logger.exception("Idempotency lookup failed.")
+
+        raise HTTPException(
+            status_code=503,
+            detail="Prediction persistence is unavailable.",
+        ) from exc
+
+    if existing is not None:
+        response.headers["Idempotency-Replayed"] = "true"
+        return ScoreResponse(**existing.to_dict())
+
+    # No previous result exists for this key, so perform inference.
+    try:
+        scoring_result = scorer.score_transaction(
+            transaction_id=payload.transaction_id,
             transaction_timestamp=payload.transaction_timestamp,
             features=payload.features,
         )
@@ -225,10 +335,19 @@ def score_transaction(
             detail=str(exc),
         ) from exc
 
+    # The repository checks the key again during the write. This second check
+    # is important when two identical requests arrive concurrently.
     try:
-        prediction_id = repository.save_prediction(
-            result.to_dict()
+        saved_result = repository.save_prediction_result(
+            scoring_result.to_dict(),
+            idempotency_key=idempotency_key,
+            request_fingerprint=request_fingerprint,
         )
+    except IdempotencyConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
     except TransactionNotFoundError as exc:
         raise HTTPException(
             status_code=404,
@@ -247,7 +366,8 @@ def score_transaction(
             detail="The prediction could not be persisted.",
         ) from exc
 
-    return ScoreResponse(
-        prediction_id=prediction_id,
-        **result.to_dict(),
+    response.headers["Idempotency-Replayed"] = (
+        "true" if saved_result.idempotent_replay else "false"
     )
+
+    return ScoreResponse(**saved_result.to_dict())
